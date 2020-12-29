@@ -5,7 +5,7 @@
 
 import copy
 import logging
-from typing import List
+from typing import List, Dict, Tuple
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from fairseq import utils
 from fairseq.data import encoders
-
+from fairseq.token_generation_constraints import pack_constraints
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,9 @@ class BARTHubInterface(nn.Module):
         return self._float_tensor.device
 
     def encode(
-        self, sentence: str, *addl_sentences, no_separator=True
-    ) -> torch.LongTensor:
+        self, sentence: str, *addl_sentences, no_separator=True,
+        constraint_tokens: List[str] = None
+    ) -> Tuple[torch.LongTensor, List[torch.LongTensor]]:
         """
         BPE-encode a sentence (or multiple sentences).
 
@@ -76,7 +77,17 @@ class BARTHubInterface(nn.Module):
             bpe_sentence += " </s>" if not no_separator else ""
             bpe_sentence += " " + self.bpe.encode(s) + " </s>"
         tokens = self.task.source_dictionary.encode_line(bpe_sentence, append_eos=False)
-        return tokens.long()
+
+        constraint_tensors = []
+        if constraint_tokens:
+            for token in constraint_tokens:
+                encoded_token = self.bpe.encode(' ' + token)
+                encoded_token_tensor = self.task.source_dictionary.encode_line(encoded_token, append_eos=False)
+                constraint_tensors.append(encoded_token_tensor)
+        else:
+            constraint_tensors = None
+
+        return tokens.long(), constraint_tensors
 
     def decode(self, tokens: torch.LongTensor):
         assert tokens.dim() == 1
@@ -93,11 +104,17 @@ class BARTHubInterface(nn.Module):
             return sentences[0]
         return sentences
 
-    def _build_sample(self, src_tokens: List[torch.LongTensor]):
+    def _build_sample(self, src_tokens: List[torch.LongTensor], constraint_tokens: List[List[torch.LongTensor]] = None):
+        if constraint_tokens:
+            batch_constraint_tensor = pack_constraints(constraint_tokens)
+        else:
+            batch_constraint_tensor = None
+
         # assert torch.is_tensor(src_tokens)
         dataset = self.task.build_dataset_for_inference(
             src_tokens,
             [x.numel() for x in src_tokens],
+            constraints=batch_constraint_tensor
         )
         sample = dataset.collater(dataset)
         sample = utils.apply_to_sample(lambda tensor: tensor.to(self.device), sample)
@@ -105,19 +122,46 @@ class BARTHubInterface(nn.Module):
 
     def sample(
         self, sentences: List[str], beam: int = 1, verbose: bool = False, **kwargs
-    ) -> str:
-        input = [self.encode(sentence) for sentence in sentences]
-        hypos = self.generate(input, beam, verbose, **kwargs)
-        return [self.decode(x["tokens"]) for x in hypos]
+    ) -> List[List[Dict]]:
+        constraint_tokens = kwargs.pop('constraint_tokens', None)
+        if constraint_tokens is not None:
+            assert kwargs['constraints']
+
+        input = [
+            self.encode(sentence, constraint_tokens=constraint_tokens)
+            for sentence
+            in sentences
+        ]
+        input_tensors, constraint_tensors = zip(*input)
+        if not constraint_tokens:
+            constraint_tensors = None
+        hypos = self.generate(input_tensors, beam, verbose, constraint_tokens=constraint_tensors, **kwargs)
+
+        predictions = []
+        example_hyps: List[Dict]
+        for example_hyps in hypos:
+            example_predictions = []
+            for hyp in example_hyps:
+                hyp_string = self.decode(hyp['tokens'])
+                hyp_score = hyp['score'].item()
+                example_predictions.append({
+                    'sentence': hyp_string,
+                    'score': hyp_score
+                })
+
+            predictions.append(example_predictions)
+
+        return predictions
 
     def generate(
         self,
         tokens: List[torch.LongTensor],
         beam: int = 5,
         verbose: bool = False,
+        constraint_tokens: List[List[torch.LongTensor]] = None,
         **kwargs
-    ) -> torch.LongTensor:
-        sample = self._build_sample(tokens)
+    ) -> List[List[Dict]]:
+        sample = self._build_sample(tokens, constraint_tokens)
 
         # build generator using current args as well as any kwargs
         gen_args = copy.copy(self.args)
@@ -125,6 +169,7 @@ class BARTHubInterface(nn.Module):
         for k, v in kwargs.items():
             setattr(gen_args, k, v)
         generator = self.task.build_generator([self.model], gen_args)
+        constraints = sample.get('constraints', None)
         translations = self.task.inference_step(
             generator,
             [self.model],
@@ -132,6 +177,7 @@ class BARTHubInterface(nn.Module):
             prefix_tokens=sample["net_input"]["src_tokens"]
             .new_zeros((len(tokens), 1))
             .fill_(self.task.source_dictionary.bos()),
+            constraints=constraints
         )
 
         if verbose:
@@ -142,8 +188,8 @@ class BARTHubInterface(nn.Module):
             return getattr(gen_args, name, getattr(self.args, name, default))
 
         # Process top predictions
-        hypos = [x[0] for x in translations]
-        hypos = [v for _, v in sorted(zip(sample["id"].tolist(), hypos))]
+        # hypos = [x[0] for x in translations]
+        hypos = [v for _, v in sorted(zip(sample["id"].tolist(), translations), key=lambda x: x[0])]
         return hypos
 
     def extract_features(
