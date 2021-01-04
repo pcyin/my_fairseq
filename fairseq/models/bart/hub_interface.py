@@ -81,7 +81,11 @@ class BARTHubInterface(nn.Module):
         constraint_tensors = []
         if constraint_tokens:
             for token in constraint_tokens:
-                encoded_token = self.bpe.encode(' ' + token)
+                if token.startswith('^'):
+                    encoded_token = self.bpe.encode(token[1:])
+                else:
+                    encoded_token = self.bpe.encode(' ' + token)
+
                 encoded_token_tensor = self.task.source_dictionary.encode_line(encoded_token, append_eos=False)
                 constraint_tensors.append(encoded_token_tensor)
         else:
@@ -174,9 +178,9 @@ class BARTHubInterface(nn.Module):
             generator,
             [self.model],
             sample,
-            prefix_tokens=sample["net_input"]["src_tokens"]
-            .new_zeros((len(tokens), 1))
-            .fill_(self.task.source_dictionary.bos()),
+            # prefix_tokens=sample["net_input"]["src_tokens"]
+            # .new_zeros((len(tokens), 1))
+            # .fill_(self.task.source_dictionary.bos()),
             constraints=constraints
         )
 
