@@ -109,10 +109,10 @@ class BARTHubInterface(nn.Module):
         return sentences
 
     def _build_sample(self, src_tokens: List[torch.LongTensor], constraint_tokens: List[List[torch.LongTensor]] = None):
-        if constraint_tokens:
-            batch_constraint_tensor = pack_constraints(constraint_tokens)
-        else:
+        if constraint_tokens is None or constraint_tokens[0] is None:
             batch_constraint_tensor = None
+        else:
+            batch_constraint_tensor = pack_constraints(constraint_tokens)
 
         # assert torch.is_tensor(src_tokens)
         dataset = self.task.build_dataset_for_inference(
