@@ -5,7 +5,7 @@
 
 import copy
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -48,7 +48,7 @@ class BARTHubInterface(nn.Module):
 
     def encode(
         self, sentence: str, *addl_sentences, no_separator=True,
-        constraint_tokens: List[str] = None
+        constraint_tokens: Optional[List[str]] = None
     ) -> Tuple[torch.LongTensor, List[torch.LongTensor]]:
         """
         BPE-encode a sentence (or multiple sentences).
@@ -127,14 +127,16 @@ class BARTHubInterface(nn.Module):
     def sample(
         self, sentences: List[str], beam: int = 1, verbose: bool = False, **kwargs
     ) -> List[List[Dict]]:
-        constraint_tokens = kwargs.pop('constraint_tokens', None)
+        constraint_tokens: Optional[List[Optional[List[str]]]] = kwargs.pop('constraint_tokens', None)
         if constraint_tokens is not None:
             assert kwargs['constraints']
+        else:
+            constraint_tokens = [None] * len(sentences)
 
         input = [
-            self.encode(sentence, constraint_tokens=constraint_tokens)
-            for sentence
-            in sentences
+            self.encode(sentence, constraint_tokens=tokens_list)
+            for sentence, tokens_list
+            in zip(sentences, constraint_tokens)
         ]
         input_tensors, constraint_tensors = zip(*input)
         if not constraint_tokens:
