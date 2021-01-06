@@ -83,6 +83,8 @@ class BARTHubInterface(nn.Module):
             for token in constraint_tokens:
                 if token.startswith('^'):
                     encoded_token = self.bpe.encode(token[1:])
+                # elif token.startswith('<nospace>'):
+                #     encoded_token = self.bpe.encode(token[len():])
                 else:
                     encoded_token = self.bpe.encode(' ' + token)
 
@@ -176,10 +178,46 @@ class BARTHubInterface(nn.Module):
             setattr(gen_args, k, v)
         generator = self.task.build_generator([self.model], gen_args)
         constraints = sample.get('constraints', None)
+
+        prefix_tokens = kwargs.pop('prefix_tokens', None)
+        if prefix_tokens:
+            prefix_tokens: List[str]
+            prefix_tokens_id_list = []
+            for i in range(len(prefix_tokens)):
+                prefix_token = prefix_tokens[i]
+                prefix_bpe_tokens = self.bpe.encode(prefix_token).split(' ')
+                prefix_token_ids = [
+                    self.task.source_dictionary.index(token)
+                    for token
+                    in prefix_bpe_tokens
+                ]
+                prefix_tokens_id_list.append(prefix_token_ids)
+
+            pad_id = self.task.source_dictionary.pad()
+            prefix_tokens_tensor = torch.IntTensor(
+                len(prefix_tokens),
+                max(len(x) for x in prefix_tokens_id_list)
+            ).fill_(pad_id)
+
+            for i in range(len(prefix_tokens)):
+                prefix_tokens_tensor[i, :len(prefix_tokens_id_list[i])] = torch.tensor(prefix_tokens_id_list[i])
+
+            prefix_tokens_tensor = prefix_tokens_tensor.to(sample["net_input"]["src_tokens"].device).long()
+            prefix_tokens_tensor = prefix_tokens_tensor.index_select(0, sample['id'])
+        else:
+            prefix_tokens_tensor = None
+
+        # prefix_tokens_tensor = self.task.source_dictionary.encode_line(
+        #     self.bpe.encode('What'), append_eos=False
+        # ).unsqueeze(0).long()
+        # prefix_tokens = sample["net_input"]["src_tokens"].new_zeros((len(tokens), 2)).fill_(prefix_token_id)
+        # prefix_tokens = None
+
         translations = self.task.inference_step(
             generator,
             [self.model],
             sample,
+            prefix_tokens=prefix_tokens_tensor,
             # prefix_tokens=sample["net_input"]["src_tokens"]
             # .new_zeros((len(tokens), 1))
             # .fill_(self.task.source_dictionary.bos()),
