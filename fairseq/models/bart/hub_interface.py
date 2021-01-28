@@ -207,6 +207,32 @@ class BARTHubInterface(nn.Module):
         else:
             prefix_tokens_tensor = None
 
+        blocked_tokens = kwargs.pop('blocked_tokens', None)
+        if blocked_tokens:
+            blocked_tokens: List[List[str]]
+
+            blocked_tokens_tensor = torch.zeros(
+                len(blocked_tokens),
+                max(len(x) if x else 0 for x in blocked_tokens),
+                dtype=torch.long
+            ).fill_(self.task.source_dictionary.pad())
+
+            assert len(blocked_tokens) == len(tokens)
+            for example_idx in range(len(blocked_tokens)):
+                example_blocked_tokens = blocked_tokens[example_idx]
+                if example_blocked_tokens:
+                    token_ids = [
+                        self.task.source_dictionary.index(self.bpe.encode(token))
+                        for token
+                        in example_blocked_tokens
+                    ]
+                    blocked_tokens_tensor[example_idx] = torch.tensor(token_ids)
+
+            blocked_tokens_tensor = blocked_tokens_tensor.to(sample["net_input"]["src_tokens"].device).long()
+            blocked_tokens_tensor = blocked_tokens_tensor.index_select(dim=0, index=sample['id'])
+        else:
+            blocked_tokens_tensor = None
+
         # prefix_tokens_tensor = self.task.source_dictionary.encode_line(
         #     self.bpe.encode('What'), append_eos=False
         # ).unsqueeze(0).long()
@@ -218,6 +244,7 @@ class BARTHubInterface(nn.Module):
             [self.model],
             sample,
             prefix_tokens=prefix_tokens_tensor,
+            blocked_tokens=blocked_tokens_tensor,
             # prefix_tokens=sample["net_input"]["src_tokens"]
             # .new_zeros((len(tokens), 1))
             # .fill_(self.task.source_dictionary.bos()),

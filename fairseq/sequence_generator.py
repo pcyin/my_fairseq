@@ -114,7 +114,8 @@ class SequenceGenerator(nn.Module):
         self,
         sample: Dict[str, Dict[str, Tensor]],
         prefix_tokens: Optional[Tensor] = None,
-        bos_token: Optional[int] = None,
+        blocked_tokens: Optional[Tensor] = None,
+        bos_token: Optional[int] = None
     ):
         """Generate a batch of translations.
 
@@ -122,10 +123,12 @@ class SequenceGenerator(nn.Module):
             sample (dict): batch
             prefix_tokens (torch.LongTensor, optional): force decoder to begin
                 with these tokens
+            blocked_tokens (torch.LongTensor, optional): do not include those tokens
+                in hypotheses
             bos_token (int, optional): beginning of sentence token
                 (default: self.eos)
         """
-        return self._generate(sample, prefix_tokens, bos_token=bos_token)
+        return self._generate(sample, prefix_tokens, blocked_tokens=blocked_tokens, bos_token=bos_token)
 
     # TODO(myleott): unused, deprecate after pytorch-translate migration
     def generate_batched_itr(self, data_itr, beam_size=None, cuda=False, timer=None):
@@ -180,6 +183,7 @@ class SequenceGenerator(nn.Module):
         self,
         sample: Dict[str, Dict[str, Tensor]],
         prefix_tokens: Optional[Tensor] = None,
+        blocked_tokens: Optional[Tensor] = None,
         constraints: Optional[Tensor] = None,
         bos_token: Optional[int] = None,
     ):
@@ -220,6 +224,10 @@ class SequenceGenerator(nn.Module):
 
         # Initialize constraints, when active
         self.search.init_constraints(constraints, beam_size)
+
+        # blocked_tokens = torch.tensor(
+        #     [2264, 12196, 12375, 8155, 32251, 5488]
+        # ).unsqueeze(0).expand(bsz, -1)
 
         max_len: int = -1
         if self.match_source_len:
@@ -333,6 +341,20 @@ class SequenceGenerator(nn.Module):
             if step >= max_len:
                 lprobs[:, : self.eos] = -math.inf
                 lprobs[:, self.eos + 1 :] = -math.inf
+
+            if blocked_tokens is not None:
+                num_blocked_tokens = blocked_tokens.size(1)
+                # (bsz * beam_size, num_blocked_tokens)
+                expanded_blocked_tokens = blocked_tokens.unsqueeze(1).expand(-1, beam_size, -1).reshape(-1, num_blocked_tokens)
+
+                # (bsz * beam_size, num_blocked_tokens)
+                tmp_idx_1 = torch.arange(lprobs.size(0), dtype=torch.long).unsqueeze(-1).to(lprobs.device)
+                blocked_tokens_lprobs = lprobs[tmp_idx_1, expanded_blocked_tokens]
+
+                blocked_tokens_mask = expanded_blocked_tokens.ne(self.pad)
+                blocked_tokens_lprobs = blocked_tokens_lprobs.masked_fill(blocked_tokens_mask, -math.inf)
+
+                lprobs[tmp_idx_1, expanded_blocked_tokens] = blocked_tokens_lprobs
 
             # handle prefix tokens (possibly with different lengths)
             if (
@@ -450,6 +472,9 @@ class SequenceGenerator(nn.Module):
 
                 if prefix_tokens is not None:
                     prefix_tokens = prefix_tokens[batch_idxs]
+                if blocked_tokens is not None:
+                    blocked_tokens = blocked_tokens[batch_idxs]
+
                 src_lengths = src_lengths[batch_idxs]
                 cands_to_ignore = cands_to_ignore[batch_idxs]
 

@@ -427,11 +427,11 @@ class FairseqTask(object):
         return loss, sample_size, logging_output
 
     def inference_step(
-        self, generator, models, sample, prefix_tokens=None, constraints=None
+        self, generator, models, sample, prefix_tokens=None, blocked_tokens=None, constraints=None
     ):
         with torch.no_grad():
             return generator.generate(
-                models, sample, prefix_tokens=prefix_tokens, constraints=constraints
+                models, sample, prefix_tokens=prefix_tokens, blocked_tokens=blocked_tokens, constraints=constraints
             )
 
     def begin_epoch(self, epoch, model):
